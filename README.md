@@ -7,7 +7,6 @@ This repository is a lightweight public release of mmGR-LO. It includes the file
 ```text
 mmGR-LO/
   README.md
-  README_zh.md
   LICENSE
   requirements.txt
   checkpoints/
