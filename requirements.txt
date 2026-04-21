@@ -1,0 +1,6 @@
+blobfile>=1.0.5
+numpy
+Pillow
+torch
+torchvision
+tqdm
