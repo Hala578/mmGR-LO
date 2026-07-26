@@ -56,6 +56,13 @@ Python 3.8 or later is recommended.
 pip install -r requirements.txt
 ```
 
+The released checkpoint is tracked with Git LFS. After cloning, make sure the
+checkpoint content is available locally:
+
+```bash
+git lfs pull --include="checkpoints/ema_0.9999_028000.pt"
+```
+
 ## Reproducing Gesture Generation
 
 Gesture generation has two stages. The first stage applies the paper's
@@ -183,38 +190,18 @@ The `ref_imgs/` directory contains two input types:
 
 | Input | Command argument | Description |
 | --- | --- | --- |
-| Reference-image folder | `--base_samples` | One action and target configuration, such as `ref_imgs/pushtarget90` |
+| Reference-image folder | `--base_samples` | One action and target configuration, such as `ref_imgs/pushtarget100` |
 | Physics-generated or packaged start image | `--start_image` | A generated DTM image or a packaged `mid_*.jpg` image |
 
 Available gesture categories are `push`, `pull`, `slide`, `sweep`, `kock`,
 and `zigzag`, with target levels from `40` to `140` where provided.
 
-Run the sampler from the repository root:
+Run the sampler from the repository root. The following example uses a
+matching reference folder and packaged start image that are included in this
+repository:
 
 ```bash
-python scripts/mmgr_sample.py \
-  --model_path checkpoints/ema_0.9999_028000.pt \
-  --base_samples ref_imgs/pushtarget90 \
-  --start_image outputs/physics_dtm_30deg.png \
-  --save_dir outputs/push_demo \
-  --attention_resolutions 16 \
-  --class_cond False \
-  --diffusion_steps 500 \
-  --dropout 0.0 \
-  --image_size 128 \
-  --learn_sigma True \
-  --noise_schedule linear \
-  --num_channels 128 \
-  --num_head_channels 64 \
-  --num_res_blocks 1 \
-  --resblock_updown True \
-  --use_fp16 False \
-  --use_scale_shift_norm True \
-  --timestep_respacing 100 \
-  --down_N 2 \
-  --range_t 5 \
-  --batch_size 1 \
-  --num_samples 1
+python scripts/mmgr_sample.py --model_path checkpoints/ema_0.9999_028000.pt --base_samples ref_imgs/pushtarget100 --start_image ref_imgs/mid_push_1.5m_100_01_Raw_0.bin.jpg --save_dir outputs/push100_demo
 ```
 
 `--base_samples` must be a directory, while `--start_image` must be an image
