@@ -1,174 +1,204 @@
 # mmGR-LO
 
-## Overview
-This repository is a lightweight public release of mmGR-LO. It includes the files required for inference reproduction: the trained inference checkpoint, the complete packaged reference-image set, a collection of mid-step start images, the inference code, and step-by-step instructions.
+Official implementation of **mmGR-LO: Advancing Location and
+Orientation-Independent Sensing for Gesture Recognition Using mmWave**.
 
-## Directory Structure
+This release contains both stages of gesture feature generation:
+
+1. the physics-based transformation that generates Doppler-time maps (DTMs)
+   for new locations and orientations; and
+2. the controlled diffusion sampler that enhances the generated DTMs.
+
+## Repository Structure
+
 ```text
 mmGR-LO/
-  README.md
-  LICENSE
-  requirements.txt
+  physics_generation/
+    __init__.py
+    physics.py
+    cli.py
+  tests/
+    test_physics_generation.py
   checkpoints/
     ema_0.9999_028000.pt
   ref_imgs/
     pushtarget40/
-      push_1.5m_40_07_Raw_0.bin.jpg
     ...
-    zigzagtarget140/
-      zigzag_1.5m_140_07_Raw_0.bin.jpg
     mid_push_1.5m_40_01_Raw_0.bin.jpg
     ...
-    mid_zigzag_1.5m_140_01_Raw_0.bin.jpg
   scripts/
     mmgr_sample.py
     resizer.py
-    __init__.py
     guided_diffusion/
+  README.md
+  LICENSE
+  requirements.txt
 ```
 
-## Environment Setup
-We recommend Python 3.8 or later.
+## Environment
 
-1. Enter the release folder:
-```bash
-cd mmGR-LO
-```
+Python 3.8 or later is recommended.
 
-2. Install dependencies:
 ```bash
 pip install -r requirements.txt
 ```
 
-3. If you need a CUDA-enabled PyTorch build, install the matching PyTorch version first, then run the command above.
+Install a CUDA-enabled PyTorch build first if GPU inference is required. The
+physics module itself only requires NumPy and Pillow and runs on CPU.
 
-Notes:
-- This release includes the trained inference checkpoint `checkpoints/ema_0.9999_028000.pt`.
-- This release supports direct single-process inference by default.
-- You do not need MPI or `mpiexec`.
-- CPU inference is possible, but it will be much slower than GPU inference.
+## Physics-Based Feature Generation
 
-## Reference Images and Start Images
-The `ref_imgs/` folder now contains two kinds of inputs:
+The implementation in `physics_generation/physics.py` corresponds to Section
+IV-C.1 and Eqs. (6)-(9) of the paper. It does not depend on plot colors or
+manually selected contours.
 
-- Reference-image folders for `--base_samples`. Each folder contains the reference image(s) for one action and target combination, such as `ref_imgs/pushtarget100` or `ref_imgs/zigzagtarget60`.
-- Mid-step start images for `--start_image`. These are the `mid_*.jpg` files stored directly under `ref_imgs/`, such as `ref_imgs/mid_push_1.5m_100_01_Raw_0.bin.jpg`.
+### Inputs
 
-Packaged action categories:
-- `push`
-- `pull`
-- `slide`
-- `sweep`
-- `kock`
-- `zigzag`
+The module accepts either a numerical DTM (`.npy`) or a DTM image. A DTM must
+have shape `[doppler_bins, frames]` or `[doppler_bins, frames, channels]`.
 
-Reference-image target levels currently packaged:
-- `40`
-- `50`
-- `60`
-- `70`
-- `80`
-- `90`
-- `100`
-- `110`
-- `120`
-- `130`
-- `140`
+To estimate the reference motion angle with Eq. (8), provide:
 
-Mid-step start-image target levels currently packaged:
-- `40`
-- `50`
-- `60`
-- `70`
-- `80`
-- `100`
-- `110`
-- `120`
-- `130`
-- `140`
+- `ranges_m`: `N + 1` consecutive target-to-radar ranges in metres;
+- `doppler_hz`: `N` Doppler-frequency estimates, one per frame interval;
+- `frame_interval_s`: the interval between consecutive range samples; and
+- `wavelength_m`: the radar wavelength (`0.004` m by default).
 
-Usage guidance:
-- Use `--base_samples` to select the reference folder for the desired action and target level.
-- Use `--start_image` only when you want to start sampling from a packaged mid-step image or your own custom image.
-- Matching the action category and target level between `--base_samples` and `--start_image` is recommended.
-- The packaged reference folders are intended for single-image inference, so `--batch_size 1` is recommended.
+The cosine rule determines the angle magnitude but not which side of the
+radial baseline the motion occupies. For a signed nonlinear trajectory, also
+provide an `N`-element vector containing `-1` or `+1`, following the paper's
+counterclockwise-positive convention.
 
-## Quick Start
-Run the following command from the `mmGR-LO/` root directory. The example below uses the packaged `pushtarget90` reference folder and saves results to `outputs/push_demo/`.
+### Step 1: Estimate Reference Angles
+
+Input vectors may be NumPy arrays (`.npy`) or comma-separated text files.
 
 ```bash
-python scripts/mmgr_sample.py --model_path checkpoints/ema_0.9999_028000.pt --base_samples ref_imgs/pushtarget90 --save_dir outputs/push_demo --attention_resolutions 16 --class_cond False --diffusion_steps 500 --dropout 0.0 --image_size 128 --learn_sigma True --noise_schedule linear --num_channels 128 --num_head_channels 64 --num_res_blocks 1 --resblock_updown True --use_fp16 False --use_scale_shift_norm True --timestep_respacing 100 --down_N 2 --range_t 5 --batch_size 1 --num_samples 1
+python -m physics_generation.cli estimate \
+  --ranges-m data/reference_ranges.npy \
+  --doppler-hz data/reference_doppler_hz.npy \
+  --frame-interval-s 0.08 \
+  --wavelength-m 0.004 \
+  --angle-signs data/reference_angle_signs.npy \
+  --output outputs/reference_angles.npy
 ```
 
-If you want to start from a packaged mid-step image, use `--start_image` with a matching `mid_*.jpg` file. Example:
+Omit `--angle-signs` for a trajectory whose principal angles in `[0, 180]`
+degrees are sufficient. By default, physically inconsistent range/Doppler
+samples raise an error instead of silently creating invalid training data.
+
+### Step 2: Generate a Target-Configuration DTM
+
+`angular-deviation-deg` is the combined location and execution-orientation
+deviation, `theta_n`, in Eq. (9).
 
 ```bash
-python scripts/mmgr_sample.py --model_path checkpoints/ema_0.9999_028000.pt --base_samples ref_imgs/pushtarget100 --start_image ref_imgs/mid_push_1.5m_100_01_Raw_0.bin.jpg --save_dir outputs/push100_midstart_demo --attention_resolutions 16 --class_cond False --diffusion_steps 500 --dropout 0.0 --image_size 128 --learn_sigma True --noise_schedule linear --num_channels 128 --num_head_channels 64 --num_res_blocks 1 --resblock_updown True --use_fp16 False --use_scale_shift_norm True --timestep_respacing 100 --down_N 2 --range_t 5 --batch_size 1 --num_samples 1
+python -m physics_generation.cli generate \
+  --input data/reference_dtm.npy \
+  --reference-angles outputs/reference_angles.npy \
+  --angular-deviation-deg 30 \
+  --doppler-min -2.77 \
+  --doppler-max 2.77 \
+  --save-vector outputs/transformation_vector.npy \
+  --output outputs/physics_dtm_30deg.npy
 ```
 
-If you also want to save intermediate diffusion steps, append:
+For a DTM image and one constant reference angle:
 
 ```bash
---save_intermediate
+python -m physics_generation.cli generate \
+  --input data/reference_dtm.png \
+  --reference-angle-deg 0 \
+  --angular-deviation-deg 30 \
+  --output outputs/physics_dtm_30deg.png
 ```
 
-## Parameter Summary
-Required arguments:
-- `--model_path`: path to the trained inference checkpoint
-- `--base_samples`: path to the reference image directory under `ref_imgs/`
-- `--save_dir`: output directory
+The generated image or array is the physics-based feature used as the start
+image for the controlled diffusion enhancement stage. A negative component
+of the transformation vector automatically reverses the Doppler direction,
+as described for nonlinear gestures in the paper.
 
-Optional arguments:
-- `--start_image`: packaged mid-step start image under `ref_imgs/` or your own custom initial image
-- `--save_intermediate`: save diffusion step images to `<save_dir>/steps/`
+### Python API
 
-Default example model settings:
-- `--image_size 128`
-- `--num_channels 128`
-- `--num_head_channels 64`
-- `--num_res_blocks 1`
-- `--attention_resolutions 16`
-- `--resblock_updown True`
-- `--learn_sigma True`
-- `--noise_schedule linear`
-- `--use_scale_shift_norm True`
+```python
+import numpy as np
 
-Default example sampling settings:
-- `--diffusion_steps 500`
-- `--timestep_respacing 100`
-- `--down_N 2`
-- `--range_t 5`
-- `--batch_size 1`
-- `--num_samples 1`
+from physics_generation import transformation_vector, warp_doppler_time_map
 
-Important:
-- `--down_N` must be a power of 2.
-- Use a folder path for `--base_samples` and a file path for `--start_image`.
+dtm = np.load("data/reference_dtm.npy")
+reference_angles = np.load("outputs/reference_angles.npy")
+doppler_axis = np.linspace(-2.77, 2.77, dtm.shape[0])
 
-## Switching Between Reference Categories
-To switch categories, replace the `--base_samples` path with another packaged folder under `ref_imgs/`.
+vector = transformation_vector(reference_angles, angular_deviation_deg=30)
+generated_dtm = warp_doppler_time_map(dtm, doppler_axis, vector)
+np.save("outputs/physics_dtm_30deg.npy", generated_dtm)
+```
 
-Examples:
-- `ref_imgs/pushtarget40`
-- `ref_imgs/pulltarget120`
-- `ref_imgs/slidetarget90`
-- `ref_imgs/sweeptarget70`
-- `ref_imgs/kocktarget140`
-- `ref_imgs/zigzagtarget50`
+### Verify the Physics Module
 
-Example for `pushtarget40`:
+The tests cover Eq. (8), Eq. (9), identity generation, and Doppler sign
+reversal:
 
 ```bash
-python scripts/mmgr_sample.py --model_path checkpoints/ema_0.9999_028000.pt --base_samples ref_imgs/pushtarget40 --save_dir outputs/push40_demo --attention_resolutions 16 --class_cond False --diffusion_steps 500 --dropout 0.0 --image_size 128 --learn_sigma True --noise_schedule linear --num_channels 128 --num_head_channels 64 --num_res_blocks 1 --resblock_updown True --use_fp16 False --use_scale_shift_norm True --timestep_respacing 100 --down_N 2 --range_t 5 --batch_size 1 --num_samples 1
+python -m unittest discover -s tests -v
 ```
 
-## Output Files
-Default output behavior:
-- Final generated images are saved under `--save_dir`
-- File names follow the format `sample_0000.png`, `sample_0001.png`, and so on
+## Controlled Diffusion Enhancement
 
-If `--save_intermediate` is enabled:
-- Intermediate diffusion step images are saved under `<save_dir>/steps/`
+The `ref_imgs/` directory contains reference-image folders for
+`--base_samples` and packaged `mid_*.jpg` start images. Available gesture
+categories are `push`, `pull`, `slide`, `sweep`, `kock`, and `zigzag`, with
+target levels from `40` to `140` where provided.
+
+Run the sampler from the repository root:
+
+```bash
+python scripts/mmgr_sample.py \
+  --model_path checkpoints/ema_0.9999_028000.pt \
+  --base_samples ref_imgs/pushtarget90 \
+  --start_image outputs/physics_dtm_30deg.png \
+  --save_dir outputs/push_demo \
+  --attention_resolutions 16 \
+  --class_cond False \
+  --diffusion_steps 500 \
+  --dropout 0.0 \
+  --image_size 128 \
+  --learn_sigma True \
+  --noise_schedule linear \
+  --num_channels 128 \
+  --num_head_channels 64 \
+  --num_res_blocks 1 \
+  --resblock_updown True \
+  --use_fp16 False \
+  --use_scale_shift_norm True \
+  --timestep_respacing 100 \
+  --down_N 2 \
+  --range_t 5 \
+  --batch_size 1 \
+  --num_samples 1
+```
+
+`--base_samples` must be a directory. `--start_image` must be an image file
+and may be either a physics-generated DTM or a packaged `mid_*.jpg` image.
+`--down_N` must be a power of two. Add `--save_intermediate` to save reverse
+diffusion steps under `<save_dir>/steps/`.
+
+Final generated images are written to `--save_dir` as `sample_0000.png`,
+`sample_0001.png`, and so on. CPU inference is supported but considerably
+slower than GPU inference.
+
+## Reproducibility Notes
+
+- The physics generator expects the DTM time axis to be the second dimension.
+- Use the Doppler limits associated with the radar configuration that produced
+  the reference DTM.
+- Eq. (9) is singular when the reference motion is perpendicular to the radar
+  radial direction (`cos(theta_i)` is approximately zero); the implementation
+  reports this condition explicitly.
+- Keep the action category and target level of `--base_samples` consistent
+  with the generated start image.
+- The repository checkpoint is tracked with Git LFS.
 
 ## License
-This release is distributed under the MIT License. See `LICENSE` for details.
+
+This project is released under the MIT License. See `LICENSE` for details.
