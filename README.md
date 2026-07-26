@@ -3,20 +3,33 @@
 Official implementation of **mmGR-LO: Advancing Location and
 Orientation-Independent Sensing for Gesture Recognition Using mmWave**.
 
-This release contains both stages of gesture feature generation:
+mmGR-LO generates gesture features for new user locations and orientations,
+enhances them with a controlled diffusion model, and performs gesture
+recognition with the lightweight M-Net.
 
-1. the physics-based transformation that generates Doppler-time maps (DTMs)
-   for new locations and orientations; and
-2. the controlled diffusion sampler that enhances the generated DTMs.
+![Overview of the mmGR-LO pipeline](assets/mmgr_lo_overview.png)
 
-## Repository Structure
+<p align="center"><em>Overview of data acquisition, two-stage gesture generation, and gesture recognition in mmGR-LO.</em></p>
+
+## What's Included
+
+| Component | Location | Purpose |
+| --- | --- | --- |
+| Physics-based feature generation | `physics_generation/` | Implements the physical model and generates target-configuration DTMs |
+| Controlled diffusion enhancement | `scripts/` | Enhances physics-generated features using the trained diffusion model |
+| Trained checkpoint | `checkpoints/` | Contains `ema_0.9999_028000.pt` for inference |
+| Reference features | `ref_imgs/` | Provides reference images and packaged `mid_*.jpg` start images |
+| Verification | `tests/` | Tests the physical equations and DTM transformation behavior |
+
+## Repository Layout
 
 ```text
 mmGR-LO/
+  assets/                         # Figures used in this README
   physics_generation/
     __init__.py
-    physics.py
-    cli.py
+    physics.py                    # Eqs. (6)-(9) and DTM transformation
+    cli.py                        # Command-line interface
   tests/
     test_physics_generation.py
   checkpoints/
@@ -35,7 +48,7 @@ mmGR-LO/
   requirements.txt
 ```
 
-## Environment
+## Installation
 
 Python 3.8 or later is recommended.
 
@@ -43,33 +56,48 @@ Python 3.8 or later is recommended.
 pip install -r requirements.txt
 ```
 
-Install a CUDA-enabled PyTorch build first if GPU inference is required. The
-physics module itself only requires NumPy and Pillow and runs on CPU.
+## Reproducing Gesture Generation
 
-## Physics-Based Feature Generation
+Gesture generation has two stages. The first stage applies the paper's
+physics-based transformation to a reference DTM. The second stage uses the
+controlled diffusion model to reduce the gap between the transformed feature
+and a real gesture feature.
+
+### Stage 1: Physics-Based Feature Generation
 
 The implementation in `physics_generation/physics.py` corresponds to Section
-IV-C.1 and Eqs. (6)-(9) of the paper. It does not depend on plot colors or
-manually selected contours.
+IV-C.1 and Eqs. (6)-(9) of the paper. It operates on numerical Doppler-time
+maps rather than plot colors or manually selected contours.
 
-### Inputs
+#### Paper-to-Code Map
 
-The module accepts either a numerical DTM (`.npy`) or a DTM image. A DTM must
-have shape `[doppler_bins, frames]` or `[doppler_bins, frames, channels]`.
+| Paper method | Implementation |
+| --- | --- |
+| Recover motion speed and `cos(theta_i)` with Eq. (8) | `estimate_motion_geometry` |
+| Recover signed reference angles | `estimate_reference_angles` |
+| Construct `T_i = cos(theta_i + theta_n) / cos(theta_i)` with Eq. (9) | `transformation_vector` |
+| Apply `F'_d = F_d x T` to the DTM Doppler axis | `warp_doppler_time_map` |
+| Run the complete process from the command line | `python -m physics_generation.cli` |
 
-To estimate the reference motion angle with Eq. (8), provide:
+#### Required Inputs
 
-- `ranges_m`: `N + 1` consecutive target-to-radar ranges in metres;
-- `doppler_hz`: `N` Doppler-frequency estimates, one per frame interval;
-- `frame_interval_s`: the interval between consecutive range samples; and
-- `wavelength_m`: the radar wavelength (`0.004` m by default).
+The module accepts a numerical DTM (`.npy`) or a DTM image. Its shape must be
+`[doppler_bins, frames]` or `[doppler_bins, frames, channels]`.
+
+| Input | Description |
+| --- | --- |
+| `ranges_m` | `N + 1` consecutive target-to-radar ranges in metres |
+| `doppler_hz` | `N` Doppler-frequency estimates, one per frame interval |
+| `frame_interval_s` | Time between consecutive range samples |
+| `wavelength_m` | Radar wavelength; the default is `0.004` m |
+| `angle_signs` | Optional `N`-element vector of `-1` or `+1` for signed nonlinear trajectories |
 
 The cosine rule determines the angle magnitude but not which side of the
-radial baseline the motion occupies. For a signed nonlinear trajectory, also
-provide an `N`-element vector containing `-1` or `+1`, following the paper's
-counterclockwise-positive convention.
+radial baseline contains the motion. When the sign is known from the gesture
+trajectory, use `angle_signs` with the paper's counterclockwise-positive
+convention.
 
-### Step 1: Estimate Reference Angles
+#### 1. Estimate Reference Angles
 
 Input vectors may be NumPy arrays (`.npy`) or comma-separated text files.
 
@@ -83,11 +111,11 @@ python -m physics_generation.cli estimate \
   --output outputs/reference_angles.npy
 ```
 
-Omit `--angle-signs` for a trajectory whose principal angles in `[0, 180]`
-degrees are sufficient. By default, physically inconsistent range/Doppler
-samples raise an error instead of silently creating invalid training data.
+Omit `--angle-signs` when principal angles in `[0, 180]` degrees are
+sufficient. Physically inconsistent range/Doppler samples raise an error by
+default instead of silently producing invalid training data.
 
-### Step 2: Generate a Target-Configuration DTM
+#### 2. Generate a Target-Configuration DTM
 
 `angular-deviation-deg` is the combined location and execution-orientation
 deviation, `theta_n`, in Eq. (9).
@@ -113,12 +141,14 @@ python -m physics_generation.cli generate \
   --output outputs/physics_dtm_30deg.png
 ```
 
-The generated image or array is the physics-based feature used as the start
-image for the controlled diffusion enhancement stage. A negative component
-of the transformation vector automatically reverses the Doppler direction,
-as described for nonlinear gestures in the paper.
+A negative transformation-vector component automatically reverses the
+Doppler direction, as described for nonlinear gestures in the paper. Use the
+generated image as the start image for Stage 2.
 
-### Python API
+#### Integrating the Physics Generator
+
+The same operations can be called directly from another preprocessing or
+data-generation script:
 
 ```python
 import numpy as np
@@ -134,7 +164,7 @@ generated_dtm = warp_doppler_time_map(dtm, doppler_axis, vector)
 np.save("outputs/physics_dtm_30deg.npy", generated_dtm)
 ```
 
-### Verify the Physics Module
+#### Verify Stage 1
 
 The tests cover Eq. (8), Eq. (9), identity generation, and Doppler sign
 reversal:
@@ -143,12 +173,21 @@ reversal:
 python -m unittest discover -s tests -v
 ```
 
-## Controlled Diffusion Enhancement
+### Stage 2: Controlled Diffusion Enhancement
 
-The `ref_imgs/` directory contains reference-image folders for
-`--base_samples` and packaged `mid_*.jpg` start images. Available gesture
-categories are `push`, `pull`, `slide`, `sweep`, `kock`, and `zigzag`, with
-target levels from `40` to `140` where provided.
+![Controlled diffusion enhancement process](assets/diffusion_enhancement.png)
+
+<p align="center"><em>The traditional reverse process and the reference-guided process used by mmGR-LO.</em></p>
+
+The `ref_imgs/` directory contains two input types:
+
+| Input | Command argument | Description |
+| --- | --- | --- |
+| Reference-image folder | `--base_samples` | One action and target configuration, such as `ref_imgs/pushtarget90` |
+| Physics-generated or packaged start image | `--start_image` | A generated DTM image or a packaged `mid_*.jpg` image |
+
+Available gesture categories are `push`, `pull`, `slide`, `sweep`, `kock`,
+and `zigzag`, with target levels from `40` to `140` where provided.
 
 Run the sampler from the repository root:
 
@@ -178,26 +217,25 @@ python scripts/mmgr_sample.py \
   --num_samples 1
 ```
 
-`--base_samples` must be a directory. `--start_image` must be an image file
-and may be either a physics-generated DTM or a packaged `mid_*.jpg` image.
-`--down_N` must be a power of two. Add `--save_intermediate` to save reverse
-diffusion steps under `<save_dir>/steps/`.
+`--base_samples` must be a directory, while `--start_image` must be an image
+file. `--down_N` must be a power of two. Add `--save_intermediate` to write
+reverse-diffusion steps to `<save_dir>/steps/`.
 
-Final generated images are written to `--save_dir` as `sample_0000.png`,
-`sample_0001.png`, and so on. CPU inference is supported but considerably
-slower than GPU inference.
+Final images are saved as `sample_0000.png`, `sample_0001.png`, and so on in
+`--save_dir`. CPU inference is supported but considerably slower than GPU
+inference.
 
 ## Reproducibility Notes
 
-- The physics generator expects the DTM time axis to be the second dimension.
+- The DTM time axis must be the second dimension.
 - Use the Doppler limits associated with the radar configuration that produced
   the reference DTM.
 - Eq. (9) is singular when the reference motion is perpendicular to the radar
-  radial direction (`cos(theta_i)` is approximately zero); the implementation
+  radial direction (`cos(theta_i)` is approximately zero). The implementation
   reports this condition explicitly.
 - Keep the action category and target level of `--base_samples` consistent
   with the generated start image.
-- The repository checkpoint is tracked with Git LFS.
+- The model checkpoint is tracked with Git LFS.
 
 ## License
 
