@@ -177,7 +177,7 @@ python -m unittest discover -s tests -v
 
 ![Controlled diffusion enhancement process](assets/diffusion_enhancement.png)
 
-<p align="center"><em>The traditional reverse process and the reference-guided process used by mmGR-LO.</em></p>
+<p align="center"><em>Diffusion model-based feature enhancement: (a) pre-training and (b) calibration.</em></p>
 
 The `ref_imgs/` directory contains two input types:
 
