@@ -171,14 +171,7 @@ generated_dtm = warp_doppler_time_map(dtm, doppler_axis, vector)
 np.save("outputs/physics_dtm_30deg.npy", generated_dtm)
 ```
 
-#### Verify Stage 1
 
-The tests cover Eq. (8), Eq. (9), identity generation, and Doppler sign
-reversal:
-
-```bash
-python -m unittest discover -s tests -v
-```
 
 ### Stage 2: Controlled Diffusion Enhancement
 
